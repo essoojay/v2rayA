@@ -74,7 +74,7 @@ func ParseTrojanURL(u string) (data *Trojan, err error) {
 		data.Host = t.Query().Get("host")
 		data.Path = t.Query().Get("path")
 		data.Type = t.Query().Get("type")
-		data.AllowInsecure = false
+		data.AllowInsecure = true
 	}
 	return data, nil
 }
