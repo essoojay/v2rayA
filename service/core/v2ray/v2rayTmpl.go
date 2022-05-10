@@ -497,6 +497,7 @@ func (t *Template) setDNSRouting(routing []coreObj.RoutingRule, supportUDP map[s
 					Type:        "field",
 					OutboundTag: "direct",
 					InboundTag: []string{
+						// do not worry the system proxy case.
 						"transparent",
 					},
 					Port: "53",
@@ -530,6 +531,13 @@ func (t *Template) AppendRoutingRuleByMode(mode configure.RulePortMode, inbounds
 				})
 		}
 		t.Routing.Rules = append(t.Routing.Rules,
+			coreObj.RoutingRule{
+				Type:        "field",
+				OutboundTag: "proxy",
+				InboundTag:  deepcopy.Copy(inbounds).([]string),
+				// https://github.com/v2rayA/v2rayA/issues/285
+				Domain: []string{"geosite:google"},
+			},
 			coreObj.RoutingRule{
 				Type:        "field",
 				OutboundTag: "direct",
@@ -678,7 +686,7 @@ func parseRoutingA(t *Template, routingInboundTags []string) error {
 									UDP: false,
 								},
 								Sniffing: coreObj.Sniffing{
-									Enabled:      true,
+									Enabled:      false,
 									DestOverride: []string{"http", "tls"},
 								},
 							}
@@ -805,12 +813,16 @@ func parseRoutingA(t *Template, routingInboundTags []string) error {
 }
 
 func (t *Template) setTransparentRouting() (err error) {
+	tproxyInbounds := []string{"transparent"}
+	if t.Setting.TransparentType == configure.TransparentSystemProxy {
+		tproxyInbounds = append(tproxyInbounds, "transparent2")
+	}
 	switch t.Setting.Transparent {
 	case configure.TransparentProxy:
 	case configure.TransparentWhitelist:
-		return t.AppendRoutingRuleByMode(configure.WhitelistMode, []string{"transparent"})
+		return t.AppendRoutingRuleByMode(configure.WhitelistMode, tproxyInbounds)
 	case configure.TransparentGfwlist:
-		return t.AppendRoutingRuleByMode(configure.GfwlistMode, []string{"transparent"})
+		return t.AppendRoutingRuleByMode(configure.GfwlistMode, tproxyInbounds)
 	case configure.TransparentFollowRule:
 		// transparent mode is the same as rule
 		for i := range t.Routing.Rules {
@@ -822,7 +834,7 @@ func (t *Template) setTransparentRouting() (err error) {
 				}
 			}
 			if ok {
-				t.Routing.Rules[i].InboundTag = append(t.Routing.Rules[i].InboundTag, "transparent")
+				t.Routing.Rules[i].InboundTag = append(t.Routing.Rules[i].InboundTag, tproxyInbounds...)
 			}
 		}
 	}
@@ -969,6 +981,8 @@ func (t *Template) appendDNSOutbound() {
 	t.Outbounds = append(t.Outbounds, coreObj.OutboundObject{
 		Tag:      "dns-out",
 		Protocol: "dns",
+		// Fallback DNS for non-A/AAAA/CNAME requests. https://github.com/v2rayA/v2rayA/issues/188
+		Settings: coreObj.Settings{Address: "119.29.29.29", Port: 53, Network: "udp"},
 	})
 }
 
@@ -1042,6 +1056,12 @@ func (t *Template) setInbound() error {
 				Protocol: "http",
 				Listen:   "127.0.0.1",
 				Tag:      "transparent",
+			})
+			t.Inbounds = append(t.Inbounds, coreObj.Inbound{
+				Port:     32346,
+				Protocol: "socks",
+				Listen:   "127.0.0.1",
+				Tag:      "transparent2",
 			})
 		}
 
@@ -1128,60 +1148,14 @@ func (t *Template) setWhitelistRouting(whitelist []Addr) {
 	}
 }
 
-func (t *Template) setGroupRouting(serverData *ServerData) (err error) {
+func (t *Template) setGroupRouting() {
 	outbounds := t.outNames()
-	mSubjectSelector := make(map[string]struct{})
-	for outbound, isGroup := range outbounds {
-		if !isGroup {
-			continue
-		}
-
-		strategy := "leastPing"
-		interval := 10 * time.Second
-		var selector []string
-
-		for _, vi := range serverData.OutboundName2ServerObjs[outbound] {
-			selector = append(selector, Ps2OutboundTag(vi.GetName()))
-		}
-
-		t.Routing.Balancers = append(t.Routing.Balancers, coreObj.Balancer{
-			Tag:      outbound,
-			Selector: selector,
-			Strategy: coreObj.BalancerStrategy{
-				//TODO: configure.GetOutboundSetting
-				Type: strategy,
-			},
-		})
-
-		if strategy == "leastPing" {
-			if err = service.CheckObservatorySupported(); err != nil {
-				return fmt.Errorf("not support observatory based load balance: %w", err)
-			}
-			if t.Observatory == nil {
-				t.Observatory = &coreObj.Observatory{
-					ProbeURL:      "https://gstatic.com/generate_204",
-					ProbeInterval: interval.String(),
-				}
-			}
-			for _, s := range selector {
-				mSubjectSelector[s] = struct{}{}
-			}
-		}
-	}
-	if t.Observatory != nil {
-		var subjectSelector []string
-		for s := range mSubjectSelector {
-			subjectSelector = append(subjectSelector, s)
-		}
-		t.Observatory.SubjectSelector = subjectSelector
-	}
 	for i := range t.Routing.Rules {
 		if t.Routing.Rules[i].OutboundTag != "" &&
 			outbounds[t.Routing.Rules[i].OutboundTag] == true {
 			t.Routing.Rules[i].BalancerTag, t.Routing.Rules[i].OutboundTag = t.Routing.Rules[i].OutboundTag, ""
 		}
 	}
-	return nil
 }
 
 type ServerData struct {
@@ -1404,7 +1378,7 @@ func (t *Template) resolveOutbounds(
 	return supportUDP, outboundTags, nil
 }
 
-func (t *Template) SetAPI() (port int) {
+func (t *Template) SetAPI(serverData *ServerData) (port int, err error) {
 	services := []string{
 		"LoggerService",
 	}
@@ -1417,9 +1391,56 @@ func (t *Template) SetAPI() (port int) {
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	if t.Observatory != nil {
-		services = append(services, "ObservatoryService")
-		t.ApiCloses = append(t.ApiCloses, ObservatoryProducer(port))
+	if serverData != nil {
+		outbounds := t.outNames()
+		mSubjectSelector := make(map[string]struct{})
+		for outbound, isGroup := range outbounds {
+			if !isGroup {
+				continue
+			}
+
+			strategy := "leastPing"
+			interval := 10 * time.Second
+			var selector []string
+
+			for _, vi := range serverData.OutboundName2ServerObjs[outbound] {
+				selector = append(selector, Ps2OutboundTag(vi.GetName()))
+			}
+
+			t.Routing.Balancers = append(t.Routing.Balancers, coreObj.Balancer{
+				Tag:      outbound,
+				Selector: selector,
+				Strategy: coreObj.BalancerStrategy{
+					//TODO: configure.GetOutboundSetting
+					Type: strategy,
+				},
+			})
+
+			if strategy == "leastPing" {
+				if err = service.CheckObservatorySupported(); err != nil {
+					return port, fmt.Errorf("not support observatory based load balance: %w", err)
+				}
+				if t.Observatory == nil {
+					t.Observatory = &coreObj.Observatory{
+						ProbeURL:      "https://gstatic.com/generate_204",
+						ProbeInterval: interval.String(),
+					}
+				}
+				for _, s := range selector {
+					mSubjectSelector[s] = struct{}{}
+				}
+			}
+		}
+		if t.Observatory != nil {
+			var subjectSelector []string
+			for s := range mSubjectSelector {
+				subjectSelector = append(subjectSelector, s)
+			}
+			t.Observatory.SubjectSelector = subjectSelector
+
+			services = append(services, "ObservatoryService")
+			t.ApiCloses = append(t.ApiCloses, ObservatoryProducer(port))
+		}
 	}
 	t.API = &coreObj.APIObject{
 		Tag:      "api-out",
@@ -1441,7 +1462,7 @@ func (t *Template) SetAPI() (port int) {
 		OutboundTag: "api-out",
 	})
 	t.ApiPort = port
-	return port
+	return port, nil
 }
 
 func (t *Template) setVlessGrpcRouting() {
@@ -1530,17 +1551,14 @@ func NewTemplate(serverInfos []serverInfo, setting *configure.Setting) (t *Templ
 			return nil, err
 		}
 	}
-	//set group routing
-	if err = t.setGroupRouting(serverData); err != nil {
-		return nil, err
-	}
 	//set vlessGrpc routing
 	t.setVlessGrpcRouting()
 	// set api
 	if t.API == nil {
-		t.SetAPI()
+		if _, err = t.SetAPI(serverData); err != nil {
+			return nil, err
+		}
 	}
-
 	// set routing whitelist
 	var whitelist []Addr
 	for _, info := range serverInfos {
@@ -1556,6 +1574,12 @@ func NewTemplate(serverInfos []serverInfo, setting *configure.Setting) (t *Templ
 	t.setWhitelistRouting(whitelist)
 
 	t.updatePrivateRouting()
+
+	// add spare tire outbound routing. Fix: https://github.com/v2rayA/v2rayA/issues/447
+	t.Routing.Rules = append(t.Routing.Rules, coreObj.RoutingRule{Type: "field", Network: "tcp,udp", OutboundTag: "proxy"})
+
+	// Set group routing. This should be put in the end of routing setters.
+	t.setGroupRouting()
 
 	t.optimizeGeoipMemoryOccupation()
 
@@ -1759,7 +1783,7 @@ func (t *Template) InsertMappingOutbound(o serverObj.ServerObj, inboundPort stri
 		Protocol: protocol,
 		Listen:   "0.0.0.0",
 		Sniffing: coreObj.Sniffing{
-			Enabled:      true,
+			Enabled:      false,
 			DestOverride: []string{"http", "tls"},
 		},
 		Settings: &coreObj.InboundSettings{
