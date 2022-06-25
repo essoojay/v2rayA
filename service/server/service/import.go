@@ -39,6 +39,7 @@ func Import(url string, which *configure.Which) (err error) {
 		strings.HasPrefix(url, "trojan-go://") ||
 		strings.HasPrefix(url, "http-proxy://") ||
 		strings.HasPrefix(url, "https-proxy://") ||
+		strings.HasPrefix(url, "socks5://") ||
 		strings.HasPrefix(url, "http2://") {
 		var obj serverObj.ServerObj
 		obj, err = ResolveURL(url)
@@ -88,8 +89,6 @@ func Import(url string, which *configure.Which) (err error) {
 				u.Scheme = "http"
 				source = u.String()
 			}
-		} else {
-			// maybe it is a OOCv1 token
 		}
 		c := httpClient.GetHttpClientAutomatically()
 		c.Timeout = 90 * time.Second

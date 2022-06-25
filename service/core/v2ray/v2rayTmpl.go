@@ -12,7 +12,6 @@ import (
 	"github.com/v2rayA/v2rayA/common"
 	"github.com/v2rayA/v2rayA/common/netTools/netstat"
 	"github.com/v2rayA/v2rayA/common/netTools/ports"
-	"github.com/v2rayA/v2rayA/common/resolv"
 	"github.com/v2rayA/v2rayA/conf"
 	"github.com/v2rayA/v2rayA/core/coreObj"
 	"github.com/v2rayA/v2rayA/core/iptables"
@@ -353,7 +352,6 @@ func (t *Template) setDNS(outbounds []serverInfo, supportUDP map[string]bool) (r
 		}
 	}
 	domainsToLookup = common.Deduplicate(domainsToLookup)
-	var domainsToHosts []string
 	if len(domainsToLookup) > 0 {
 		var dnsList []string
 		if service.CheckTcpDnsSupported() == nil {
@@ -371,57 +369,29 @@ func (t *Template) setDNS(outbounds []serverInfo, supportUDP map[string]bool) (r
 		t.DNS.Servers = append(t.DNS.Servers, d...)
 		routing = append(routing, r...)
 	}
-	// set hosts
-	var wg sync.WaitGroup
-	var mu sync.Mutex
-	ech := make(chan error, len(domainsToHosts))
-	for _, domain := range domainsToHosts {
-		wg.Add(1)
-		go func(domain string) {
-			defer wg.Done()
-			ips, err := resolv.LookupHost(domain)
-			if err != nil {
-				ech <- fmt.Errorf("%w: please make sure you're connected to the Internet", err)
-				return
-			}
-			ips = FilterIPs(ips)
-			mu.Lock()
-			if t.DNS.Hosts == nil {
-				t.DNS.Hosts = make(coreObj.Hosts)
-			}
-			if service.CheckHostsListSupported() == nil {
-				t.DNS.Hosts[domain] = ips
-			} else {
-				t.DNS.Hosts[domain] = ips[0]
-			}
-			mu.Unlock()
-		}(domain)
-	}
-	wg.Wait()
-	select {
-	case err = <-ech:
-		return nil, err
-	default:
-		// deduplicate
-		strRouting := make([]string, 0, len(routing))
-		for _, r := range routing {
-			b, err := jsoniter.Marshal(r)
-			if err != nil {
-				log.Fatal("%v", err)
-			}
-			strRouting = append(strRouting, string(b))
+	// hard code for SNI problem like apple pushing
+	t.DNS.Hosts = make(coreObj.Hosts)
+	t.DNS.Hosts["courier.push.apple.com"] = []string{"1-courier.push.apple.com"}
+
+	// deduplicate
+	strRouting := make([]string, 0, len(routing))
+	for _, r := range routing {
+		b, err := jsoniter.Marshal(r)
+		if err != nil {
+			return nil, fmt.Errorf("jsoniter.Marshal: %v", err)
 		}
-		strRouting = common.Deduplicate(strRouting)
-		routing = routing[:0]
-		for _, sr := range strRouting {
-			var r coreObj.RoutingRule
-			if err := jsoniter.Unmarshal([]byte(sr), &r); err != nil {
-				log.Fatal("%v: %v", err, sr)
-			}
-			routing = append(routing, r)
-		}
-		return routing, nil
+		strRouting = append(strRouting, string(b))
 	}
+	strRouting = common.Deduplicate(strRouting)
+	routing = routing[:0]
+	for _, sr := range strRouting {
+		var r coreObj.RoutingRule
+		if err := jsoniter.Unmarshal([]byte(sr), &r); err != nil {
+			return nil, fmt.Errorf("jsoniter.Unmarshal: RoutingRule: %v", err)
+		}
+		routing = append(routing, r)
+	}
+	return routing, nil
 }
 
 // FilterIPs returns filtered IP list.
@@ -510,6 +480,13 @@ func (t *Template) setDNSRouting(routing []coreObj.RoutingRule, supportUDP map[s
 
 func (t *Template) AppendRoutingRuleByMode(mode configure.RulePortMode, inbounds []string) (err error) {
 	firstOutboundTag, _ := t.FirstProxyOutboundName(nil)
+	// apple pushing. #495 #479
+	t.Routing.Rules = append(t.Routing.Rules, coreObj.RoutingRule{
+		Type:        "field",
+		OutboundTag: "direct",
+		InboundTag:  deepcopy.Copy(inbounds).([]string),
+		Domain:      []string{"domain:push-apple.com.akadns.net", "domain:push.apple.com"},
+	})
 	switch mode {
 	case configure.WhitelistMode:
 		// foreign domains with intranet IP should be proxied first rather than directly connected
@@ -689,6 +666,20 @@ func parseRoutingA(t *Template, routingInboundTags []string) error {
 									Enabled:      false,
 									DestOverride: []string{"http", "tls"},
 								},
+							}
+							if sniffing := proto.NamedParams["sniffing"]; len(sniffing) > 0 {
+								// support inbound:a=socks(address: 127.0.0.1, port: 1080, sniffing:tls, sniffing:http)
+								// support inbound:a=http(address: 127.0.0.1, port: 1081, sniffing:"http,tls")
+								in.Sniffing.Enabled = true
+								var sniffs []string
+								for _, sniff := range sniffing {
+									fields := strings.Split(sniff, ",")
+									for i := range fields {
+										fields[i] = strings.TrimSpace(fields[i])
+									}
+									sniffs = append(sniffs, fields...)
+								}
+								in.Sniffing.DestOverride = sniffs
 							}
 							if proto.Name == "socks" {
 								if len(server.Users) > 0 {
@@ -1076,6 +1067,9 @@ func (t *Template) setInbound() error {
 				Listen:   "0.0.0.0",
 				Settings: &coreObj.InboundSettings{
 					Network: "udp",
+					// the non-A/AAAA/CNAME problem has been fixed by the setting in DNS outbound.
+					// so the Address here is innocuous.
+					// related commit: https://github.com/v2rayA/v2rayA/commit/ecbf915d4be8b9066955a21059519266bcca6b92
 					Address: "2.0.1.7",
 					Port:    53,
 				},

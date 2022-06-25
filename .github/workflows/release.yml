@@ -150,13 +150,14 @@ jobs:
         fpm -s dir -t pacman -p installer_archlinux_aarch64_$VERSION.pkg.tar.zstd --description "$DESC" --architecture=aarch64 $PARAMS v2raya_linux_arm64_$VERSION=/usr/bin/v2raya $FILES
         
         # https://www.freebsd.org/platforms/
-        fpm -s dir -t freebsd -p installer_freebsd_i386_$VERSION.txz $PARAMS --description "$DESC" --architecture=i386 v2raya_linux_x86_$VERSION=/usr/bin/v2raya $FILES
-        fpm -s dir -t freebsd -p installer_freebsd_amd64_$VERSION.txz $PARAMS --description "$DESC" --architecture=amd64 v2raya_linux_x64_$VERSION=/usr/bin/v2raya $FILES
-        fpm -s dir -t freebsd -p installer_freebsd_armv6_$VERSION.txz $PARAMS --description "$DESC" --architecture=armv6 v2raya_linux_arm_$VERSION=/usr/bin/v2raya $FILES
-        fpm -s dir -t freebsd -p installer_freebsd_armv7_$VERSION.txz $PARAMS --description "$DESC" --architecture=armv7 v2raya_linux_arm_$VERSION=/usr/bin/v2raya $FILES
-        fpm -s dir -t freebsd -p installer_freebsd_aarch64_$VERSION.txz $PARAMS --description "$DESC" --architecture=aarch64 v2raya_linux_arm64_$VERSION=/usr/bin/v2raya $FILES
+        # fpm -s dir -t freebsd -p installer_freebsd_i386_$VERSION.txz $PARAMS --description "$DESC" --architecture=i386 v2raya_linux_x86_$VERSION=/usr/bin/v2raya $FILES
+        # fpm -s dir -t freebsd -p installer_freebsd_amd64_$VERSION.txz $PARAMS --description "$DESC" --architecture=amd64 v2raya_linux_x64_$VERSION=/usr/bin/v2raya $FILES
+        # fpm -s dir -t freebsd -p installer_freebsd_armv6_$VERSION.txz $PARAMS --description "$DESC" --architecture=armv6 v2raya_linux_arm_$VERSION=/usr/bin/v2raya $FILES
+        # fpm -s dir -t freebsd -p installer_freebsd_armv7_$VERSION.txz $PARAMS --description "$DESC" --architecture=armv7 v2raya_linux_arm_$VERSION=/usr/bin/v2raya $FILES
+        # fpm -s dir -t freebsd -p installer_freebsd_aarch64_$VERSION.txz $PARAMS --description "$DESC" --architecture=aarch64 v2raya_linux_arm64_$VERSION=/usr/bin/v2raya $FILES
 
         # MacOSX
+        # macOS users should go to https://github.com/v2rayA/homebrew-v2raya
     - name: Windows Installer
       if: startsWith(github.ref, 'refs/tags/v')
       env:
@@ -198,7 +199,7 @@ jobs:
         install/tool/reprepro_expect --ask-passphrase -Vb apt export
         cp v2raya_*_*_${{ steps.prep.outputs.VERSION }}* apt/pool/main/v/v2raya/
         cp web.tar.gz apt/pool/main/v/v2raya/web_$VERSION.tar.gz
-        echo "apt.v2raya.mzz.pub" > apt/CNAME
+        echo "apt.v2raya.org" > apt/CNAME
 
     - name: Deploy APT repository
       if: startsWith(github.ref, 'refs/tags/v')
@@ -218,6 +219,37 @@ jobs:
         build_dir: web
       env:
           GH_PAT: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
+    - name: Tag Demo Site repository
+      if: startsWith(github.ref, 'refs/tags/v')
+      uses: actions/github-script@v6
+      with:
+        github-token: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
+        script: |
+          const commit = await github.rest.repos.getCommit({
+            owner: context.repo.owner,
+            repo: 'v2raya-web',
+            ref: 'master'
+          });
+
+          try {
+            await github.rest.git.createRef({
+              owner: context.repo.owner,
+              repo: 'v2raya-web',
+              ref: context.ref,
+              sha: commit.data.sha.toString()
+            });
+          } catch(e) {
+            if ( e instanceof Error && e.status === 422 ) {
+              // the tag already exists, force update it
+              await github.rest.git.updateRef({
+                owner: context.repo.owner,
+                repo: 'v2raya-web',
+                ref: context.ref.replace(/^refs\//, ''),
+                sha: commit.data.sha.toString(),
+                force: true
+              });
+            };
+          };
     - name: AUR Release
       if: startsWith(github.ref, 'refs/tags/v')
       env:
@@ -262,11 +294,6 @@ jobs:
           installer_archlinux_armv6h_${{ steps.prep.outputs.VERSION }}.pkg.tar.zstd
           installer_archlinux_armv7h_${{ steps.prep.outputs.VERSION }}.pkg.tar.zstd
           installer_archlinux_aarch64_${{ steps.prep.outputs.VERSION }}.pkg.tar.zstd
-          installer_freebsd_i386_${{ steps.prep.outputs.VERSION }}.txz
-          installer_freebsd_amd64_${{ steps.prep.outputs.VERSION }}.txz
-          installer_freebsd_armv6_${{ steps.prep.outputs.VERSION }}.txz
-          installer_freebsd_armv7_${{ steps.prep.outputs.VERSION }}.txz
-          installer_freebsd_aarch64_${{ steps.prep.outputs.VERSION }}.txz
           installer_windows_x64_${{ steps.prep.outputs.VERSION }}.exe
     - name: Refresh Cloudflare Cache
       if: startsWith(github.ref, 'refs/tags/v')
