@@ -49,13 +49,19 @@ type Template struct {
 	Observatory *coreObj.Observatory `json:"observatory,omitempty"`
 	API         *coreObj.APIObject   `json:"api,omitempty"`
 
-	Variant      where.Variant      `json:"-"`
-	CoreVersion  string             `json:"-"`
-	Plugins      []plugin.Server    `json:"-"`
-	OutboundTags []string           `json:"-"`
-	ApiCloses    []func()           `json:"-"`
-	ApiPort      int                `json:"-"`
-	Setting      *configure.Setting `json:"-"`
+	Variant               where.Variant       `json:"-"`
+	CoreVersion           string              `json:"-"`
+	Plugins               []plugin.Server     `json:"-"`
+	OutboundTags          []string            `json:"-"`
+	ApiCloses             []func()            `json:"-"`
+	ApiPort               int                 `json:"-"`
+	Setting               *configure.Setting  `json:"-"`
+	PluginManagerInfoList []PluginManagerInfo `json:"-"`
+}
+
+type PluginManagerInfo struct {
+	Link string
+	Port int
 }
 
 func (t *Template) Close() error {
@@ -773,14 +779,32 @@ func parseRoutingA(t *Template, routingInboundTags []string) error {
 								rr.Domain = append(rr.Domain, v)
 								continue
 							}
+							if k == "ext" {
+								datFilenameAndTag := strings.SplitN(v, ":", 2)
+								if len(datFilenameAndTag) < 2 {
+									return fmt.Errorf("%v: tag is not given", v)
+								}
+								if !asset.DoesV2rayAssetExist(datFilenameAndTag[0]) {
+									return fmt.Errorf("%v: file is not found", datFilenameAndTag[0])
+								}
+							}
 							rr.Domain = append(rr.Domain, fmt.Sprintf("%v:%v", k, v))
 						}
 					}
-					//this is not recommended
+					// unnamed param is not recommended
 					rr.Domain = append(rr.Domain, f.Params...)
 				case "ip":
 					for k, vv := range f.NamedParams {
 						for _, v := range vv {
+							if k == "ext" {
+								datFilenameAndTag := strings.SplitN(v, ":", 2)
+								if len(datFilenameAndTag) < 2 {
+									return fmt.Errorf("%v: tag is not given", v)
+								}
+								if !asset.DoesV2rayAssetExist(datFilenameAndTag[0]) {
+									return fmt.Errorf("%v: file is not found", datFilenameAndTag[0])
+								}
+							}
 							rr.IP = append(rr.IP, fmt.Sprintf("%v:%v", k, v))
 						}
 					}
@@ -1261,9 +1285,9 @@ func (t *Template) resolveOutbounds(
 			usedByBalancer     bool
 			balancerPluginPort int
 		)
-		// a vmessInfo(server template) may is used by multiple serverInfos(a connected server)
+		// an vmessInfo(server template) may be used by multiple serverInfos(a connected server)
 
-		// outbound name is not just v2ray outbound tag, it may is a balancer
+		// outbound name is not just v2ray outbound tag, it may be a balancer
 		type balancer struct {
 			name       string
 			serverInfo *serverInfo
@@ -1296,6 +1320,12 @@ func (t *Template) resolveOutbounds(
 					return nil, nil, err
 				}
 				extraOutbounds = append(extraOutbounds, c.ExtraOutbounds...)
+				if c.PluginManagerServerLink != "" {
+					t.PluginManagerInfoList = append(t.PluginManagerInfoList, PluginManagerInfo{
+						Link: c.PluginManagerServerLink,
+						Port: sInfo.PluginPort,
+					})
+				}
 				var s plugin.Server
 				if len(c.PluginChain) > 0 {
 					s, err = plugin.ServerFromChain(c.PluginChain)
@@ -1329,7 +1359,12 @@ func (t *Template) resolveOutbounds(
 			for _, v := range balancers {
 				c.CoreOutbound.Balancers = append(c.CoreOutbound.Balancers, v.name)
 			}
-
+			if c.PluginManagerServerLink != "" {
+				t.PluginManagerInfoList = append(t.PluginManagerInfoList, PluginManagerInfo{
+					Link: c.PluginManagerServerLink,
+					Port: balancerPluginPort,
+				})
+			}
 			// we use the lowest serverInfo index as the order weight of the balancer outbound
 			weight := -1
 			for _, v := range balancers {
@@ -1774,6 +1809,12 @@ func (t *Template) InsertMappingOutbound(o serverObj.ServerObj, inboundPort stri
 		} else {
 			t.Plugins = append(t.Plugins, server)
 		}
+	}
+	if c.PluginManagerServerLink != "" {
+		t.PluginManagerInfoList = append(t.PluginManagerInfoList, PluginManagerInfo{
+			Link: c.PluginManagerServerLink,
+			Port: pluginPort,
+		})
 	}
 	var mark = 0x80
 	t.checkAndSetMark(&c.CoreOutbound, mark)

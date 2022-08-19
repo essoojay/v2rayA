@@ -3,6 +3,8 @@ package serverObj
 import (
 	"encoding/base64"
 	"fmt"
+	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 	"github.com/v2rayA/v2rayA/common/ntp"
 	"net"
 	"net/url"
@@ -12,7 +14,6 @@ import (
 	"time"
 
 	jsoniter "github.com/json-iterator/go"
-	"github.com/tidwall/gjson"
 	"github.com/v2rayA/v2rayA/common"
 	"github.com/v2rayA/v2rayA/core/coreObj"
 	"github.com/v2rayA/v2rayA/core/v2ray/service"
@@ -36,9 +37,11 @@ type V2Ray struct {
 	Port          string `json:"port"`
 	ID            string `json:"id"`
 	Aid           string `json:"aid"`
+	Security      string `json:"scy"`
 	Net           string `json:"net"`
 	Type          string `json:"type"`
 	Host          string `json:"host"`
+	SNI           string `json:"sni"`
 	Path          string `json:"path"`
 	TLS           string `json:"tls"`
 	Flow          string `json:"flow,omitempty"`
@@ -69,7 +72,8 @@ func ParseVlessURL(vless string) (data *V2Ray, err error) {
 		ID:            u.User.String(),
 		Net:           u.Query().Get("type"),
 		Type:          u.Query().Get("headerType"),
-		Host:          u.Query().Get("sni"),
+		Host:          u.Query().Get("host"),
+		SNI:           u.Query().Get("sni"),
 		Path:          u.Query().Get("path"),
 		TLS:           u.Query().Get("security"),
 		Flow:          u.Query().Get("flow"),
@@ -86,16 +90,13 @@ func ParseVlessURL(vless string) (data *V2Ray, err error) {
 	if data.Type == "" {
 		data.Type = "none"
 	}
-	if data.Host == "" {
-		data.Host = u.Query().Get("host")
-	}
 	if data.TLS == "" {
 		data.TLS = "none"
 	}
 	if data.Flow == "" {
 		data.Flow = "xtls-rprx-direct"
 	}
-	if data.Type == "mkcp" || data.Type == "kcp" {
+	if data.Net == "mkcp" || data.Net == "kcp" {
 		data.Path = u.Query().Get("seed")
 	}
 	return data, nil
@@ -145,6 +146,11 @@ func ParseVmessURL(vmess string) (data *V2Ray, err error) {
 		if aid == "" {
 			aid = q.Get("aid")
 		}
+		security := q.Get("scy")
+		if security == "" {
+			security = q.Get("security")
+		}
+		sni := q.Get("sni")
 		info = V2Ray{
 			ID:            subMatch[1],
 			Add:           subMatch[2],
@@ -152,8 +158,10 @@ func ParseVmessURL(vmess string) (data *V2Ray, err error) {
 			Ps:            ps,
 			Host:          obfsParam,
 			Path:          path,
+			SNI:           sni,
 			Net:           obfs,
 			Aid:           aid,
+			Security:      security,
 			TLS:           map[string]string{"1": "tls"}[q.Get("tls")],
 			AllowInsecure: false,
 		}
@@ -161,15 +169,15 @@ func ParseVmessURL(vmess string) (data *V2Ray, err error) {
 			info.Net = "ws"
 		}
 	} else {
+		// fuzzily parse allowInsecure
+		if allowInsecure := gjson.Get(raw, "allowInsecure"); allowInsecure.Exists() {
+			if newRaw, err := sjson.Set(raw, "allowInsecure", allowInsecure.Bool()); err == nil {
+				raw = newRaw
+			}
+		}
 		err = jsoniter.Unmarshal([]byte(raw), &info)
 		if err != nil {
 			return
-		}
-		if info.Host == "" {
-			sni := gjson.Get(raw, "sni")
-			if sni.Exists() {
-				info.Host = sni.String()
-			}
 		}
 	}
 	// correct the wrong vmess as much as possible
@@ -199,7 +207,17 @@ func (v *V2Ray) Configuration(info PriorInfo) (c Configuration, err error) {
 		switch strings.ToLower(v.Protocol) {
 		case "vmess":
 			if ok, t, err := ntp.IsDatetimeSynced(); err == nil && !ok {
-				return Configuration{}, fmt.Errorf("please sync datetime first. Your datetime is %v, and the correct datetime is %v", time.Now().Local().Format(ntp.DisplayFormat), t.Local().Format(ntp.DisplayFormat))
+				return Configuration{}, fmt.Errorf("please sync datetime first. Your datetime is %v, and the "+
+					"correct datetime is %v", time.Now().Local().Format(ntp.DisplayFormat), t.Local().Format(ntp.DisplayFormat))
+			}
+			if len(v.Aid) > 0 && v.Aid != "0" {
+				log.Error("We do not support alterID > 0 since v1.5.6 due to security; please contact your server provider or " +
+					"downgrade v2rayA to v1.5.5")
+				return Configuration{}, fmt.Errorf("unsupported alterID > 0: check the log for more information")
+			}
+			security := v.Security
+			if security == "" {
+				security = "auto"
 			}
 			core.Settings.Vnext = []coreObj.Vnext{
 				{
@@ -209,7 +227,7 @@ func (v *V2Ray) Configuration(info PriorInfo) (c Configuration, err error) {
 						{
 							ID:       id,
 							AlterID:  0,
-							Security: "auto",
+							Security: security,
 						},
 					},
 				},
@@ -328,7 +346,9 @@ func (v *V2Ray) Configuration(info PriorInfo) (c Configuration, err error) {
 				core.StreamSettings.TLSSettings.AllowInsecure = true
 			}
 			// SNI
-			if v.Host != "" {
+			if v.SNI != "" {
+				core.StreamSettings.TLSSettings.ServerName = v.SNI
+			} else if v.Host != "" {
 				core.StreamSettings.TLSSettings.ServerName = v.Host
 			}
 			// Alpn
@@ -345,6 +365,8 @@ func (v *V2Ray) Configuration(info PriorInfo) (c Configuration, err error) {
 			// SNI
 			if v.Host != "" {
 				core.StreamSettings.XTLSSettings.ServerName = v.Host
+			} else if v.Host != "" {
+				core.StreamSettings.TLSSettings.ServerName = v.Host
 			}
 			if v.AllowInsecure {
 				core.StreamSettings.XTLSSettings.AllowInsecure = true
@@ -419,7 +441,7 @@ func (v *V2Ray) ExportToURL() string {
 	return ""
 }
 
-func (v *V2Ray) NeedPlugin() bool {
+func (v *V2Ray) NeedPluginPort() bool {
 	return false
 }
 

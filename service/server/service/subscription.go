@@ -1,9 +1,10 @@
 package service
 
 import (
-	"encoding/json"
+	"bytes"
 	"errors"
 	"fmt"
+	jsoniter "github.com/json-iterator/go"
 	"github.com/v2rayA/v2rayA/common"
 	"github.com/v2rayA/v2rayA/common/httpClient"
 	"github.com/v2rayA/v2rayA/common/resolv"
@@ -39,7 +40,7 @@ type SIP008 struct {
 }
 
 func resolveSIP008(raw string) (infos []serverObj.ServerObj, sip SIP008, err error) {
-	err = json.Unmarshal([]byte(raw), &sip)
+	err = jsoniter.Unmarshal([]byte(raw), &sip)
 	if err != nil {
 		return
 	}
@@ -139,7 +140,10 @@ func parseSubscriptionUserInfo(str string) SubscriptionUserInfo {
 	}
 	return sui
 }
-
+func trapBOM(fileBytes []byte) []byte {
+	trimmedBytes := bytes.Trim(fileBytes, "\xef\xbb\xbf")
+	return trimmedBytes
+}
 func ResolveSubscriptionWithClient(source string, client *http.Client) (infos []serverObj.ServerObj, status string, err error) {
 	c := *client
 	if c.Timeout < 30*time.Second {
@@ -155,12 +159,12 @@ func ResolveSubscriptionWithClient(source string, client *http.Client) (infos []
 	if err != nil {
 		return nil, "", err
 	}
-	// base64 decode
-	raw, err := common.Base64StdDecode(string(b))
+	// base64 decode. trapBOM due to https://github.com/v2rayA/v2rayA/issues/612
+	raw, err := common.Base64StdDecode(string(trapBOM(b)))
 	if err != nil {
 		raw, _ = common.Base64URLDecode(string(b))
 	}
-	infos, status, err = ResolveLines(raw)
+	infos, status, err = ResolveByLines(raw)
 	if err != nil {
 		return nil, "", err
 	}
@@ -174,7 +178,7 @@ func ResolveSubscriptionWithClient(source string, client *http.Client) (infos []
 	return infos, status, nil
 }
 
-func ResolveLines(raw string) (infos []serverObj.ServerObj, status string, err error) {
+func ResolveByLines(raw string) (infos []serverObj.ServerObj, status string, err error) {
 	var sip SIP008
 	if infos, sip, err = resolveSIP008(raw); err == nil {
 		status = getDataUsageStatus(sip.BytesUsed, sip.BytesRemaining)
