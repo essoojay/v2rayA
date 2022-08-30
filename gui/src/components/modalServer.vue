@@ -64,7 +64,7 @@
             />
           </b-field>
           <b-field
-            v-if="v2ray.protocol !== 'vless'"
+            v-if="v2ray.protocol === 'vmess'"
             label="AlterID"
             label-position="on-border"
           >
@@ -78,6 +78,19 @@
               required
               expanded
             />
+          </b-field>
+          <b-field
+            v-if="v2ray.protocol === 'vmess'"
+            label="Security"
+            label-position="on-border"
+          >
+            <b-select v-model="v2ray.scy" expanded>
+              <option value="auto">Auto</option>
+              <option value="aes-128-gcm">aes-128-gcm</option>
+              <option value="chacha20-poly1305">chacha20-poly1305</option>
+              <option value="none">none</option>
+              <option value="zero">zero</option>
+            </b-select>
           </b-field>
           <b-field
             v-show="v2ray.type !== 'dtls'"
@@ -311,6 +324,32 @@
               <option value="">{{ $t("setting.options.off") }}</option>
               <option value="simple-obfs">simple-obfs</option>
               <option value="v2ray-plugin">v2ray-plugin</option>
+            </b-select>
+          </b-field>
+          <b-field
+            v-if="ss.plugin === 'simple-obfs' || ss.plugin === 'v2ray-plugin'"
+            label-position="on-border"
+            class="with-icon-alert"
+          >
+            <template slot="label">
+              Impl
+              <b-tooltip
+                type="is-dark"
+                :label="$t('setting.messages.ssPluginImpl')"
+                multilined
+                position="is-right"
+              >
+                <b-icon
+                  size="is-samll"
+                  icon=" iconfont icon-help-circle-outline"
+                  style="position:relative;top:2px;right:3px;font-weight:normal"
+                />
+              </b-tooltip>
+            </template>
+            <b-select ref="ss_plugin_impl" v-model="ss.impl" expanded>
+              <option value="">{{ $t("setting.options.default") }}</option>
+              <option value="chained">chained</option>
+              <option value="transport">transport</option>
             </b-select>
           </b-field>
           <b-field
@@ -792,6 +831,7 @@ export default {
       tls: "none",
       flow: "xtls-rprx-direct",
       alpn: "",
+      scy: "",
       v: "",
       allowInsecure: false,
       protocol: "vmess"
@@ -808,7 +848,8 @@ export default {
       server: "",
       port: "",
       name: "",
-      protocol: "ss"
+      protocol: "ss",
+      impl: ""
     },
     ssr: {
       method: "aes-128-cfb",
@@ -977,6 +1018,7 @@ export default {
         obj.ps = decodeURIComponent(obj.ps);
         obj.tls = obj.tls || "none";
         obj.type = obj.type || "none";
+        obj.scy = obj.scy || "auto";
         obj.protocol = obj.protocol || "vmess";
         return obj;
       } else if (url.toLowerCase().startsWith("vless://")) {
@@ -1030,7 +1072,8 @@ export default {
           name: u.hash,
           obfs: "http",
           plugin: "",
-          protocol: "ss"
+          protocol: "ss",
+          impl: ""
         };
         if (u.params.plugin) {
           u.params.plugin = decodeURIComponent(u.params.plugin);
@@ -1066,6 +1109,9 @@ export default {
                 break;
               case "tls":
                 obj.tls = "tls";
+                break;
+              case "impl":
+                obj.impl = a[1];
             }
           }
         }
@@ -1272,11 +1318,17 @@ export default {
                 }
                 plugin.push("path=" + srcObj.path);
               }
+              if (srcObj.impl) {
+                plugin.push("impl=" + srcObj.impl);
+              }
             } else {
               plugin.push("obfs=" + srcObj.obfs);
               plugin.push("obfs-host=" + srcObj.host);
               if (srcObj.obfs === "http") {
                 plugin.push("obfs-path=" + srcObj.path);
+              }
+              if (srcObj.impl) {
+                plugin.push("impl=" + srcObj.impl);
               }
             }
             tmp += `?plugin=${encodeURIComponent(plugin.join(";"))}`;

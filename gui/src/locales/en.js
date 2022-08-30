@@ -158,7 +158,11 @@ export default {
                           <p>TCP: {tcpPorts}</p>
                           <p>UDP: {udpPorts}</p>`,
       xtlsNotWithWs: `xtls cannot work with websocket`,
-      grpcShouldWithTls: `gRPC must be with TLS`
+      grpcShouldWithTls: `gRPC must be with TLS`,
+      ssPluginImpl:
+        "★default: 'transport' for simple-obfs, 'chained' for v2ray-plugin." +
+        "★chained: shadowsocks traffic will be redirect to standalone plugin." +
+        "★transport: processed by the transport layer of v2ray/xray core directly."
     }
   },
   customAddressPort: {
@@ -269,7 +273,9 @@ export default {
   version: {
     higherVersionNeeded:
       "This operation need higher version of v2rayA than {version}",
-    v2rayInvalid: "geosite.dat, geoip.dat or v2ray-core may not be installed correctly"
+    v2rayInvalid:
+      "geosite.dat, geoip.dat or v2ray-core may not be installed correctly",
+    lowCoreVersion: "the version of core is too low, unexpected behavior may occur"
   },
   about: `<p>v2rayA is a web GUI client of V2Ray. Frontend is built with Vue.js and backend is built with golang.</p>
           <p class="about-small">Default ports:</p>
